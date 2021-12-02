@@ -117,9 +117,9 @@ colors = [cm.inferno_r(c0+ (c1-c0)*frac) for frac in ts/ts.max()]
 # gridspec inside gridspec
 from matplotlib import gridspec
 fig = plt.figure(figsize=(6,4))
-gs0 = gridspec.GridSpec(2, 1, figure=fig, hspace=0.05, height_ratios=[3,2])
+gs0 = gridspec.GridSpec(2, 1, figure=fig, hspace=0.1, height_ratios=[3,2])
 gs00 = gs0[0].subgridspec(1, 2, hspace=0, wspace=0.0, width_ratios=[1,2])
-gs01 = gs0[1].subgridspec(1, 2, hspace=0, wspace=0.2, width_ratios=[1,2])
+gs01 = gs0[1].subgridspec(1, 2, hspace=0, wspace=0.4, width_ratios=[1,2])
 
 ax = {}
 ax[0,0] = fig.add_subplot(gs00[0])
@@ -127,7 +127,6 @@ ax[0,1] = fig.add_subplot(gs00[1])
 ax[1,0] = fig.add_subplot(gs01[0])
 ax[1,1] = fig.add_subplot(gs01[1])
 ax[0,1].set(yticks=[])
-ax[1,1].set(yticks=[])
 
 step = 5
 for i in range(N):
@@ -160,7 +159,89 @@ ax[0,0].set_ylabel('Velocity perturbation\n$\\tilde{u}$',labelpad=0)
 ax[0,1].set(xlim=[0,150],ylim=[-.5,1.1],xticks=[])
 # ax[1,0].set(xlim=[0,2.5],ylim=[0,.1],xlabel='Radius $r$',ylabel='Local energy\n$e$')
 # ax[1,1].set(xlim=[0,150],ylim=[0,.2],xlabel='Radius $r$')
-ax[1,0].set(xlim=[0,ts[-1]],ylim=[0,.05],xlabel='Time $t$',ylabel='Total energy\n$E_1, r< r_*$')
+ax[1,0].set(xlim=[0,ts[-1]],ylim=[0,.1],yticks=[0,.05,.1],xlabel='Time $t$',ylabel='Total energy\n$E_1, r< r_*$')
 ax[1,1].set(xlim=[0,ts[-1]],ylim=[0,1.5],xlabel='Time $t$',ylabel='Total energy\n$E_2, r> r_*$')
 fig.suptitle('Evolution of linear perturbation of smooth accretion flow\n$\ell = 1.1, r_h = 0.0925$')
 plt.savefig('figures/black-hole-linear-perturbation-smooth-evolution.pdf',bbox_inches='tight')
+
+
+
+# normal mode plots
+
+boundaries = bs = (g+1e-10,g+1e-8,g+1e-6,g+1e-4,g+1e-2, rs-1e-2,rs)
+
+nr = 256
+sbasis = de.Chebyshev('s',nr, interval=(0,1))
+sdomain = de.Domain([sbasis],grid_dtype=np.float64)
+s, = sdomain.grids()
+N = len(bs)-1
+rarrs = [bs[i] + (bs[i+1]-bs[i])*s for i in range(N)]
+drs = [bs[i+1]-bs[i] for i in range(N)]
+u0s = sdomain.new_fields(N)
+for i in range(N): u0s[i]['g'] = u_ufunc(rarrs[i])
+
+dru01 = (u0s[1].differentiate('s')/drs[1]).evaluate().interpolate(s='right')['g'][0]
+
+def compound_spectrum(λ):
+    problem = de.LBVP(sdomain, variables=[f'{f}{i}' for i in range(N) for f in 'uvw' ])
+    problem.parameters['λ'] = λ
+    problem.substitutions[f'dt(A)'] = 'λ*A'
+    problem.parameters['l'] = l
+    problem.parameters['g'] = g
+    for i in range(N+1): problem.parameters[f'r_{i}'] = bs[i]
+    for i in range(N):
+        problem.substitutions[f'r{i}'] = f'r_{i} + s*(r_{i+1} - r_{i})'
+        problem.substitutions[f'dr{i}(A)'] = f'ds(A)/(r_{i+1} - r_{i})'
+        problem.parameters[f'u0{i}'] = u0s[i]
+        problem.substitutions[f'a{i}'] = f'λ*u{i}'
+        problem.substitutions[f'f{i}'] = f'(u0{i}-1/u0{i})'
+        problem.substitutions[f'e{i}'] = f'(1/2)*(f{i}*a{i}**2 - u0{i}*v{i}**2)'
+        problem.substitutions[f'integr{i}(A)'] = f'integ(A)*(r_{i+1} - r_{i})'
+        problem.substitutions[f'E{i}'] = f'integr{i}(e{i})'
+        problem.substitutions[f'decay{i}'] = f'2*integr{i}((dr{i}(u0{i})/u0{i})*a{i}**2)'
+        problem.substitutions[f'boundaries{i}'] = f'right(-f{i}*u0{i}*(v{i}+a{i})*a{i}) - left(-f{i}*u0{i}*(v{i}+a{i})*a{i})'
+        problem.substitutions[f'res{i}'] = f'dt(a{i}) + dr{i}(u0{i}*(2*a{i} + v{i}))' 
+
+    for i in range(N):
+        problem.add_equation(f'v{i} - dr{i}((u0{i}-1/u0{i})*u{i}) = 0')
+        problem.add_equation(f'dt(a{i}) + dr{i}(u0{i}*(2*a{i} + v{i})) = 0')
+        problem.add_equation(f'dr{i}(w{i}) - u{i} = 0')
+
+    # problem.add_equation('right(u2) = 0')
+    problem.add_equation('left(w0) = 0')
+    for i in range(N-1):
+        problem.add_equation(f'right(w{i}) - left(w{i+1}) = 0')
+        problem.add_equation(f'right(v{i}) - left(v{i+1}) = 0')
+        problem.add_equation(f'right(u{i}) - left(u{i+1}) = 0')
+    problem.add_equation(f'right(v{N-1} - 2*dr{N-1}(u0{N-1})*u{N-1}) = 0')
+    problem.add_equation(f'right(w{N-1}) = 1')
+    # problem.add_equation(f'right(u{N-1}) = 0')
+
+    solver = problem.build_solver()
+
+    fields = {_: solver.state[_] for _ in problem.variables}
+    solver.solve()
+    res = {res: solver.evaluator.vars[res].evaluate() for res in [f'res{i}' for i in range(N)]}
+    return {**fields,**res,**{'λ':λ}}
+
+λs = np.linspace(-2,2,21)
+dics = {}
+for i, λi in enumerate(λs):
+    dics[i] = compound_spectrum(λi)
+    print(i, λi)
+
+colors = ['C5','C7','C0','C9','C2','C8','C1','C3','C6','C4']
+colors = colors[::-1] + ['k'] + colors
+ordering = list(range(0,11)) + list(range(20,10,-1))
+
+fig, ax = plt.subplots(figsize=(6,4))
+for i in ordering:
+    λ = dics[i]['λ']
+    for k in range(N):
+        ax.plot(rarrs[k], dics[i][f'u{k}']['g'], colors[i], 
+            label=f'$λ = {dics[i]["λ"]:.1f}$' if k == 0 else None,
+            linewidth=2 if λ==0 else 1,linestyle='-' if λ <= 0 else '--')
+ax.legend(frameon=False,ncol=2,loc='upper right')
+ax.set(xlim=[g,rs],ylim=[0,5.5],xlabel='Radius $r$',ylabel='Perturbation $\\tilde u$',
+       title='Normal modes for smooth supersonic perturbations\n$\ell = 1.1, r_h = 0.0925$')
+plt.savefig('figures/black-hole-smooth-pertubation-normal-modes.pdf',bbox_inches='tight')
